@@ -1,37 +1,67 @@
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
-import z from "zod"
-import { Instance } from "../project/instance"
-import { Log } from "../util/log"
-import { FileIgnore } from "./ignore"
-import { Config } from "../config/config"
-import path from "path"
+/**
+ * FileWatcher 模块 - 文件监控
+ *
+ * 本模块提供文件系统变更监控功能。
+ *
+ * 主要功能：
+ * - 监控文件创建、修改、删除事件
+ * - 支持多平台（Windows, macOS, Linux）
+ * - 自动忽略不需要监控的文件
+ * - 监控 Git HEAD 文件以检测分支切换
+ *
+ * 使用 @parcel/watcher 作为底层实现
+ *
+ * @module file/watcher
+ */
+import { BusEvent } from "@/bus/bus-event" // 事件定义
+import { Bus } from "@/bus" // 事件总线
+import z from "zod" // Schema 验证
+import { Instance } from "../project/instance" // 项目实例
+import { Log } from "../util/log" // 日志
+import { FileIgnore } from "./ignore" // 忽略配置
+import { Config } from "../config/config" // 配置
+import path from "path" // 路径处理
 // @ts-ignore
-import { createWrapper } from "@parcel/watcher/wrapper"
-import { lazy } from "@/util/lazy"
-import { withTimeout } from "@/util/timeout"
-import type ParcelWatcher from "@parcel/watcher"
-import { $ } from "bun"
-import { Flag } from "@/flag/flag"
-import { readdir } from "fs/promises"
+import { createWrapper } from "@parcel/watcher/wrapper" // Watcher 包装
+import { lazy } from "@/util/lazy" // 懒加载
+import { withTimeout } from "@/util/timeout" // 超时工具
+import type ParcelWatcher from "@parcel/watcher" // Watcher 类型
+import { $ } from "bun" // Shell 命令
+import { Flag } from "@/flag/flag" // 功能标志
+import { readdir } from "fs/promises" // 文件系统
 
+/** 订阅超时时间（毫秒） */
 const SUBSCRIBE_TIMEOUT_MS = 10_000
 
+// libc 类型声明（用于 Linux 平台）
 declare const OPENCODE_LIBC: string | undefined
 
+/**
+ * FileWatcher 命名空间
+ *
+ * 提供文件监控功能
+ */
 export namespace FileWatcher {
+  // 创建文件监控模块日志记录器
   const log = Log.create({ service: "file.watcher" })
 
+  /** 文件监控事件定义 */
   export const Event = {
+    /** 文件更新事件 */
     Updated: BusEvent.define(
       "file.watcher.updated",
       z.object({
-        file: z.string(),
-        event: z.union([z.literal("add"), z.literal("change"), z.literal("unlink")]),
+        file: z.string(), // 文件路径
+        event: z.union([z.literal("add"), z.literal("change"), z.literal("unlink")]), // 事件类型
       }),
     ),
   }
 
+  /**
+   * 懒加载 Watcher 实例
+   *
+   * 根据平台加载对应的 native binding
+   */
   const watcher = lazy(() => {
     const binding = require(
       `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? `-${OPENCODE_LIBC || "glibc"}` : ""}`,
@@ -39,6 +69,11 @@ export namespace FileWatcher {
     return createWrapper(binding) as typeof import("@parcel/watcher")
   })
 
+  /**
+   * FileWatcher 状态
+   *
+   * 初始化时设置文件监控
+   */
   const state = Instance.state(
     async () => {
       if (Instance.project.vcs !== "git") return {}
@@ -109,6 +144,11 @@ export namespace FileWatcher {
     },
   )
 
+  /**
+   * 初始化文件监控
+   *
+   * 如果已禁用则不执行任何操作
+   */
   export function init() {
     if (Flag.OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER) {
       return

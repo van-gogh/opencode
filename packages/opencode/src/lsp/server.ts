@@ -1,31 +1,81 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
-import path from "path"
-import os from "os"
-import { Global } from "../global"
-import { Log } from "../util/log"
-import { BunProc } from "../bun"
-import { $, readableStreamToText } from "bun"
-import fs from "fs/promises"
-import { Filesystem } from "../util/filesystem"
-import { Instance } from "../project/instance"
-import { Flag } from "../flag/flag"
-import { Archive } from "../util/archive"
+/**
+ * LSPServer 模块 - LSP 服务器管理
+ *
+ * 本模块提供多种编程语言的 LSP 服务器支持。
+ *
+ * 支持的语言/工具：
+ * - TypeScript/JavaScript: typescript-language-server
+ * - Deno: deno lsp
+ * - Vue: vue-language-server
+ * - ESLint: vscode-eslint
+ * - Oxlint: oxlint --lsp
+ * - Biome: biome lsp-proxy
+ * - Python: pyright, ty
+ * - Go: gopls
+ * - Rust: rust-analyzer
+ * - C/C++: clangd
+ * - Ruby: rubocop --lsp
+ * - Elixir: elixir-ls
+ * - Zig: zls
+ * - C#: csharp-ls
+ * - F#: fsautocomplete
+ * - Swift: sourcekit-lsp
+ *
+ * @module lsp/server
+ */
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process" // 子进程创建
+import path from "path" // 路径处理
+import os from "os" // 操作系统
+import { Global } from "../global" // 全局路径
+import { Log } from "../util/log" // 日志
+import { BunProc } from "../bun" // Bun 进程
+import { $, readableStreamToText } from "bun" // Shell 命令
+import fs from "fs/promises" // 文件系统
+import { Filesystem } from "../util/filesystem" // 文件系统工具
+import { Instance } from "../project/instance" // 项目实例
+import { Flag } from "../flag/flag" // 功能标志
+import { Archive } from "../util/archive" // 压缩包处理
 
+/**
+ * LSPServer 命名空间
+ *
+ * 提供 LSP 服务器管理功能
+ */
 export namespace LSPServer {
+  // 创建 LSP 服务器模块日志记录器
   const log = Log.create({ service: "lsp.server" })
+
+  /**
+   * 检查路径是否存在
+   */
   const pathExists = async (p: string) =>
     fs
       .stat(p)
       .then(() => true)
       .catch(() => false)
 
+  /**
+   * LSP 服务器句柄
+   */
   export interface Handle {
-    process: ChildProcessWithoutNullStreams
-    initialization?: Record<string, any>
+    process: ChildProcessWithoutNullStreams // 子进程
+    initialization?: Record<string, any> // 初始化参数
   }
 
+  /**
+   * 根目录查找函数类型
+   */
   type RootFunction = (file: string) => Promise<string | undefined>
 
+  /**
+   * 创建最近根目录查找函数
+   *
+   * 从文件所在目录向上搜索，查找包含指定文件的目录
+   *
+   * @param includePatterns - 要搜索的文件模式
+   * @param excludePatterns - 要排除的文件模式
+   * @returns 根目录查找函数
+   */
   const NearestRoot = (includePatterns: string[], excludePatterns?: string[]): RootFunction => {
     return async (file) => {
       if (excludePatterns) {
@@ -50,14 +100,18 @@ export namespace LSPServer {
     }
   }
 
+  /**
+   * LSP 服务器信息接口
+   */
   export interface Info {
-    id: string
-    extensions: string[]
-    global?: boolean
-    root: RootFunction
-    spawn(root: string): Promise<Handle | undefined>
+    id: string // 服务器 ID
+    extensions: string[] // 支持的文件扩展名
+    global?: boolean // 是否全局
+    root: RootFunction // 根目录查找函数
+    spawn(root: string): Promise<Handle | undefined> // 启动服务器
   }
 
+  /** Deno LSP 服务器 */
   export const Deno: Info = {
     id: "deno",
     root: async (file) => {
@@ -86,6 +140,7 @@ export namespace LSPServer {
     },
   }
 
+  /** TypeScript LSP 服务器 */
   export const Typescript: Info = {
     id: "typescript",
     root: NearestRoot(
@@ -115,6 +170,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Vue LSP 服务器 */
   export const Vue: Info = {
     id: "vue",
     extensions: [".vue"],
@@ -164,6 +220,7 @@ export namespace LSPServer {
     },
   }
 
+  /** ESLint LSP 服务器 */
   export const ESLint: Info = {
     id: "eslint",
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
@@ -222,6 +279,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Oxlint LSP 服务器 */
   export const Oxlint: Info = {
     id: "oxlint",
     root: NearestRoot([
@@ -293,6 +351,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Biome LSP 服务器 */
   export const Biome: Info = {
     id: "biome",
     root: NearestRoot([
@@ -355,6 +414,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Go LSP 服务器 (gopls) */
   export const Gopls: Info = {
     id: "gopls",
     root: async (file) => {
@@ -397,6 +457,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Ruby LSP 服务器 (rubocop) */
   export const Rubocop: Info = {
     id: "ruby-lsp",
     root: NearestRoot(["Gemfile"]),
@@ -438,6 +499,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Python Ty LSP 服务器 */
   export const Ty: Info = {
     id: "ty",
     extensions: [".py", ".pyi"],
@@ -502,6 +564,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Python Pyright LSP 服务器 */
   export const Pyright: Info = {
     id: "pyright",
     extensions: [".py", ".pyi"],
@@ -556,6 +619,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Elixir LSP 服务器 */
   export const ElixirLS: Info = {
     id: "elixir-ls",
     extensions: [".ex", ".exs"],
@@ -618,6 +682,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Zig LSP 服务器 (zls) */
   export const Zls: Info = {
     id: "zls",
     extensions: [".zig", ".zon"],
@@ -730,6 +795,7 @@ export namespace LSPServer {
     },
   }
 
+  /** C# LSP 服务器 */
   export const CSharp: Info = {
     id: "csharp",
     root: NearestRoot([".sln", ".csproj", "global.json"]),
@@ -770,6 +836,7 @@ export namespace LSPServer {
     },
   }
 
+  /** F# LSP 服务器 */
   export const FSharp: Info = {
     id: "fsharp",
     root: NearestRoot([".sln", ".fsproj", "global.json"]),
@@ -810,6 +877,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Swift LSP 服务器 (sourcekit-lsp) */
   export const SourceKit: Info = {
     id: "sourcekit-lsp",
     extensions: [".swift", ".objc", "objcpp"],
@@ -844,6 +912,7 @@ export namespace LSPServer {
     },
   }
 
+  /** Rust LSP 服务器 (rust-analyzer) */
   export const RustAnalyzer: Info = {
     id: "rust",
     root: async (root) => {
@@ -890,6 +959,7 @@ export namespace LSPServer {
     },
   }
 
+  /** C/C++ LSP 服务器 (clangd) */
   export const Clangd: Info = {
     id: "clangd",
     root: NearestRoot(["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt", "Makefile"]),

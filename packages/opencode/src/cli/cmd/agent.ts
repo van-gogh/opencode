@@ -1,32 +1,59 @@
-import { cmd } from "./cmd"
-import * as prompts from "@clack/prompts"
-import { UI } from "../ui"
-import { Global } from "../../global"
-import { Agent } from "../../agent/agent"
-import { Provider } from "../../provider/provider"
-import path from "path"
-import fs from "fs/promises"
-import matter from "gray-matter"
-import { Instance } from "../../project/instance"
-import { EOL } from "os"
-import type { Argv } from "yargs"
+/**
+ * Agent 命令 - 自定义 Agent 管理
+ *
+ * 本模块实现 `opencode agent` 命令。
+ *
+ * 主要功能：
+ * - 创建自定义 Agent
+ * - 列出所有可用 Agent
+ * - 支持交互式和非交互式模式
+ *
+ * @module cli/cmd/agent
+ */
+import { cmd } from "./cmd" // 命令定义
+import * as prompts from "@clack/prompts" // 交互式提示
+import { UI } from "../ui" // UI 工具
+import { Global } from "../../global" // 全局路径
+import { Agent } from "../../agent/agent" // Agent 模块
+import { Provider } from "../../provider/provider" // Provider 模块
+import path from "path" // 路径处理
+import fs from "fs/promises" // 文件系统
+import matter from "gray-matter" // Frontmatter 解析
+import { Instance } from "../../project/instance" // 项目实例
+import { EOL } from "os" // 行结束符
+import type { Argv } from "yargs" // CLI 参数解析
 
+/**
+ * Agent 模式类型
+ *
+ * - all: 可以作为主 Agent 或子 Agent
+ * - primary: 仅作为主 Agent
+ * - subagent: 仅作为子 Agent
+ */
 type AgentMode = "all" | "primary" | "subagent"
 
+/**
+ * 可用工具列表
+ */
 const AVAILABLE_TOOLS = [
-  "bash",
-  "read",
-  "write",
-  "edit",
-  "list",
-  "glob",
-  "grep",
-  "webfetch",
-  "task",
-  "todowrite",
-  "todoread",
+  "bash", // Shell 命令
+  "read", // 文件读取
+  "write", // 文件写入
+  "edit", // 文件编辑
+  "list", // 目录列表
+  "glob", // 文件搜索
+  "grep", // 内容搜索
+  "webfetch", // 网页访问
+  "task", // 子任务
+  "todowrite", // 任务写入
+  "todoread", // 任务读取
 ]
 
+/**
+ * Agent Create 子命令
+ *
+ * 创建新的自定义 Agent，支持交互式和非交互式模式
+ */
 const AgentCreateCommand = cmd({
   command: "create",
   describe: "create a new agent",
@@ -225,6 +252,11 @@ const AgentCreateCommand = cmd({
   },
 })
 
+/**
+ * Agent List 子命令
+ *
+ * 列出所有可用的 Agent
+ */
 const AgentListCommand = cmd({
   command: "list",
   describe: "list all available agents",
@@ -249,6 +281,11 @@ const AgentListCommand = cmd({
   },
 })
 
+/**
+ * Agent 命令定义
+ *
+ * 父命令，包含子命令 create 和 list
+ */
 export const AgentCommand = cmd({
   command: "agent",
   describe: "manage agents",

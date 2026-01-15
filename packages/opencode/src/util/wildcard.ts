@@ -1,6 +1,39 @@
-import { sortBy, pipe } from "remeda"
+/**
+ * Wildcard 模块 - 通配符匹配
+ *
+ * 本模块提供通配符模式匹配功能。
+ *
+ * 支持的通配符：
+ * - *: 匹配任意数量的任意字符
+ * - ?: 匹配单个任意字符
+ *
+ * 主要用途：
+ * - 权限模式匹配
+ * - 命令规则匹配
+ *
+ * @module util/wildcard
+ */
+import { sortBy, pipe } from "remeda" // 数据处理工具
 
+/**
+ * Wildcard 命名空间
+ *
+ * 提供通配符匹配功能
+ */
 export namespace Wildcard {
+  /**
+   * 匹配字符串与模式
+   *
+   * 将通配符模式转换为正则表达式进行匹配
+   *
+   * @param str - 要匹配的字符串
+   * @param pattern - 通配符模式
+   * @returns 是否匹配
+   *
+   * @example
+   * match("hello.ts", "*.ts") // true
+   * match("hello", "h?llo") // true
+   */
   export function match(str: string, pattern: string) {
     const regex = new RegExp(
       "^" +
@@ -14,6 +47,18 @@ export namespace Wildcard {
     return regex.test(str)
   }
 
+  /**
+   * 查找所有匹配的模式值
+   *
+   * 按模式长度排序，返回最后一个匹配的值（最具体的匹配）
+   *
+   * @param input - 要匹配的字符串
+   * @param patterns - 模式到值的映射
+   * @returns 匹配的值，无匹配则返回 undefined
+   *
+   * @example
+   * all("bash rm", { "bash": "allow", "bash rm*": "deny" }) // "deny"
+   */
   export function all(input: string, patterns: Record<string, any>) {
     const sorted = pipe(patterns, Object.entries, sortBy([([key]) => key.length, "asc"], [([key]) => key, "asc"]))
     let result = undefined
@@ -26,6 +71,22 @@ export namespace Wildcard {
     return result
   }
 
+  /**
+   * 结构化匹配
+   *
+   * 支持多部分模式匹配，如 "bash rm *"
+   *
+   * @param input.head - 主命令
+   * @param input.tail - 子命令/参数数组
+   * @param patterns - 模式到值的映射
+   * @returns 匹配的值
+   *
+   * @example
+   * allStructured({ head: "bash", tail: ["rm", "-rf"] }, {
+   *   "bash rm*": "deny",
+   *   "bash": "allow"
+   * }) // "deny"
+   */
   export function allStructured(input: { head: string; tail: string[] }, patterns: Record<string, any>) {
     const sorted = pipe(patterns, Object.entries, sortBy([([key]) => key.length, "asc"], [([key]) => key, "asc"]))
     let result = undefined
@@ -40,6 +101,15 @@ export namespace Wildcard {
     return result
   }
 
+  /**
+   * 序列匹配
+   *
+   * 检查 items 中是否存在按顺序匹配 patterns 的子序列
+   *
+   * @param items - 要匹配的项目数组
+   * @param patterns - 模式数组
+   * @returns 是否匹配
+   */
   function matchSequence(items: string[], patterns: string[]): boolean {
     if (patterns.length === 0) return true
     const [pattern, ...rest] = patterns

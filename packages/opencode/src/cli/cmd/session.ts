@@ -1,13 +1,35 @@
-import type { Argv } from "yargs"
-import { cmd } from "./cmd"
-import { Session } from "../../session"
-import { bootstrap } from "../bootstrap"
-import { UI } from "../ui"
-import { Locale } from "../../util/locale"
-import { Flag } from "../../flag/flag"
-import { EOL } from "os"
-import path from "path"
+/**
+ * Session 命令 - 会话管理
+ *
+ * 本模块实现 `opencode session` 命令。
+ *
+ * 主要功能：
+ * - 列出所有会话
+ * - 支持表格和 JSON 格式输出
+ * - 支持分页显示
+ * - 支持限制显示数量
+ *
+ * @module cli/cmd/session
+ */
+import type { Argv } from "yargs" // CLI 参数解析
+import { cmd } from "./cmd" // 命令定义
+import { Session } from "../../session" // 会话模块
+import { bootstrap } from "../bootstrap" // 引导启动
+import { UI } from "../ui" // UI 工具
+import { Locale } from "../../util/locale" // 本地化
+import { Flag } from "../../flag/flag" // 功能标志
+import { EOL } from "os" // 行结束符
+import path from "path" // 路径处理
 
+/**
+ * 获取分页器命令
+ *
+ * 根据平台选择合适的分页器：
+ * - Unix: less
+ * - Windows: 尝试使用 Git Bash 的 less，回退到 more
+ *
+ * @returns 分页器命令数组
+ */
 function pagerCmd(): string[] {
   const lessOptions = ["-R", "-S"]
   if (process.platform !== "win32") {
@@ -35,6 +57,11 @@ function pagerCmd(): string[] {
   return ["cmd", "/c", "more"]
 }
 
+/**
+ * Session 命令定义
+ *
+ * 父命令，包含子命令 list
+ */
 export const SessionCommand = cmd({
   command: "session",
   describe: "manage sessions",
@@ -42,6 +69,11 @@ export const SessionCommand = cmd({
   async handler() {},
 })
 
+/**
+ * Session List 子命令
+ *
+ * 列出所有会话，支持分页和格式化
+ */
 export const SessionListCommand = cmd({
   command: "list",
   describe: "list sessions",
@@ -103,6 +135,12 @@ export const SessionListCommand = cmd({
   },
 })
 
+/**
+ * 格式化会话为表格
+ *
+ * @param sessions - 会话列表
+ * @returns 格式化的表格字符串
+ */
 function formatSessionTable(sessions: Session.Info[]): string {
   const lines: string[] = []
 
@@ -122,6 +160,12 @@ function formatSessionTable(sessions: Session.Info[]): string {
   return lines.join(EOL)
 }
 
+/**
+ * 格式化会话为 JSON
+ *
+ * @param sessions - 会话列表
+ * @returns JSON 字符串
+ */
 function formatSessionJSON(sessions: Session.Info[]): string {
   const jsonData = sessions.map((session) => ({
     id: session.id,

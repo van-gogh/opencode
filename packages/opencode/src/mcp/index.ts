@@ -1,60 +1,101 @@
-import { dynamicTool, type Tool, jsonSchema, type JSONSchema7 } from "ai"
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
+/**
+ * MCP 模块 - Model Context Protocol 集成
+ *
+ * 本模块实现了 MCP（Model Context Protocol）客户端。
+ * MCP 是一种允许 AI 模型与外部工具和资源交互的协议。
+ *
+ * 主要功能：
+ * - 连接远程 MCP 服务器（HTTP/SSE）
+ * - 连接本地 MCP 服务器（Stdio）
+ * - OAuth 认证流程
+ * - 工具、提示词、资源的管理
+ * - 连接状态管理
+ *
+ * 支持的传输方式：
+ * - StreamableHTTP: 现代的 HTTP 流传输
+ * - SSE: 服务器发送事件
+ * - Stdio: 标准输入输出（本地进程）
+ *
+ * @module mcp/index
+ */
+
+import { dynamicTool, type Tool, jsonSchema, type JSONSchema7 } from "ai" // AI SDK 工具
+import { Client } from "@modelcontextprotocol/sdk/client/index.js" // MCP 客户端
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js" // HTTP 传输
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js" // SSE 传输
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js" // Stdio 传输
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js" // 认证错误
 import {
   CallToolResultSchema,
   type Tool as MCPToolDef,
   ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js"
-import { Config } from "../config/config"
-import { Log } from "../util/log"
-import { NamedError } from "@opencode-ai/util/error"
-import z from "zod/v4"
-import { Instance } from "../project/instance"
-import { Installation } from "../installation"
-import { withTimeout } from "@/util/timeout"
-import { McpOAuthProvider } from "./oauth-provider"
-import { McpOAuthCallback } from "./oauth-callback"
-import { McpAuth } from "./auth"
-import { BusEvent } from "../bus/bus-event"
-import { Bus } from "@/bus"
-import { TuiEvent } from "@/cli/cmd/tui/event"
-import open from "open"
+} from "@modelcontextprotocol/sdk/types.js" // MCP 类型定义
+import { Config } from "../config/config" // 配置管理
+import { Log } from "../util/log" // 日志
+import { NamedError } from "@opencode-ai/util/error" // 命名错误
+import z from "zod/v4" // Schema 验证
+import { Instance } from "../project/instance" // 项目实例
+import { Installation } from "../installation" // 安装信息
+import { withTimeout } from "@/util/timeout" // 超时工具
+import { McpOAuthProvider } from "./oauth-provider" // OAuth Provider
+import { McpOAuthCallback } from "./oauth-callback" // OAuth 回调
+import { McpAuth } from "./auth" // MCP 认证
+import { BusEvent } from "../bus/bus-event" // 事件定义
+import { Bus } from "@/bus" // 事件总线
+import { TuiEvent } from "@/cli/cmd/tui/event" // TUI 事件
+import open from "open" // 打开浏览器
 
+/**
+ * MCP 命名空间
+ *
+ * 提供 MCP 客户端功能和连接管理
+ */
 export namespace MCP {
+  // 创建 MCP 专用日志记录器
   const log = Log.create({ service: "mcp" })
+
+  /** 默认连接超时时间 */
   const DEFAULT_TIMEOUT = 30_000
 
+  /** MCP 资源类型定义 */
   export const Resource = z
     .object({
-      name: z.string(),
-      uri: z.string(),
-      description: z.string().optional(),
-      mimeType: z.string().optional(),
-      client: z.string(),
+      name: z.string(), // 资源名称
+      uri: z.string(), // 资源 URI
+      description: z.string().optional(), // 描述
+      mimeType: z.string().optional(), // MIME 类型
+      client: z.string(), // 客户端名称
     })
     .meta({ ref: "McpResource" })
   export type Resource = z.infer<typeof Resource>
 
+  /** 工具列表变更事件 */
   export const ToolsChanged = BusEvent.define(
     "mcp.tools.changed",
     z.object({
-      server: z.string(),
+      server: z.string(), // 服务器名称
     }),
   )
 
+  /** MCP 连接失败错误 */
   export const Failed = NamedError.create(
     "MCPFailed",
     z.object({
-      name: z.string(),
+      name: z.string(), // 服务器名称
     }),
   )
 
   type MCPClient = Client
 
+  /**
+   * MCP 连接状态类型
+   *
+   * - connected: 已连接
+   * - disabled: 已禁用
+   * - failed: 连接失败
+   * - needs_auth: 需要认证
+   * - needs_client_registration: 需要客户端注册
+   */
   export const Status = z
     .discriminatedUnion("status", [
       z
@@ -100,7 +141,14 @@ export namespace MCP {
     })
   export type Status = z.infer<typeof Status>
 
-  // Register notification handlers for MCP client
+  /**
+   * 注册 MCP 客户端通知处理器
+   *
+   * 监听服务器发送的工具列表变更通知
+   *
+   * @param client - MCP 客户端实例
+   * @param serverName - 服务器名称
+   */
   function registerNotificationHandlers(client: MCPClient, serverName: string) {
     client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
       log.info("tools list changed notification received", { server: serverName })
@@ -108,7 +156,15 @@ export namespace MCP {
     })
   }
 
-  // Convert MCP tool definition to AI SDK Tool type
+  /**
+   * 将 MCP 工具定义转换为 AI SDK Tool 类型
+   *
+   * MCP 工具有自己的格式，需要转换为 AI SDK 可用的格式。
+   *
+   * @param mcpTool - MCP 工具定义
+   * @param client - MCP 客户端
+   * @returns AI SDK Tool 对象
+   */
   async function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient): Promise<Tool> {
     const inputSchema = mcpTool.inputSchema
 
@@ -140,19 +196,35 @@ export namespace MCP {
     })
   }
 
-  // Store transports for OAuth servers to allow finishing auth
+  // 存储待 OAuth 认证的传输层实例
   type TransportWithAuth = StreamableHTTPClientTransport | SSEClientTransport
   const pendingOAuthTransports = new Map<string, TransportWithAuth>()
 
-  // Prompt cache types
+  // 提示词信息类型
   type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][number]
 
+  // 资源信息类型
   type ResourceInfo = Awaited<ReturnType<MCPClient["listResources"]>>["resources"][number]
+
+  // MCP 配置条目类型
   type McpEntry = NonNullable<Config.Info["mcp"]>[string]
+
+  /**
+   * 检查 MCP 配置是否已配置
+   *
+   * @param entry - 配置条目
+   * @returns 是否为有效的 MCP 配置
+   */
   function isMcpConfigured(entry: McpEntry): entry is Config.Mcp {
     return typeof entry === "object" && entry !== null && "type" in entry
   }
 
+  /**
+   * MCP 模块状态
+   *
+   * 使用 Instance.state 创建项目级别的单例状态。
+   * 包含所有 MCP 客户端和连接状态。
+   */
   const state = Instance.state(
     async () => {
       const cfg = await Config.get()
@@ -202,7 +274,13 @@ export namespace MCP {
     },
   )
 
-  // Helper function to fetch prompts for a specific client
+  /**
+   * 获取特定客户端的提示词列表
+   *
+   * @param clientName - 客户端名称
+   * @param client - MCP 客户端实例
+   * @returns 提示词列表（键为 "客户端:提示词名"）
+   */
   async function fetchPromptsForClient(clientName: string, client: Client) {
     const prompts = await client.listPrompts().catch((e) => {
       log.error("failed to get prompts", { clientName, error: e.message })
@@ -225,6 +303,13 @@ export namespace MCP {
     return commands
   }
 
+  /**
+   * 获取特定客户端的资源列表
+   *
+   * @param clientName - 客户端名称
+   * @param client - MCP 客户端实例
+   * @returns 资源列表（键为 "客户端:资源名"）
+   */
   async function fetchResourcesForClient(clientName: string, client: Client) {
     const resources = await client.listResources().catch((e) => {
       log.error("failed to get prompts", { clientName, error: e.message })
@@ -247,6 +332,15 @@ export namespace MCP {
     return commands
   }
 
+  /**
+   * 添加新的 MCP 服务器
+   *
+   * 在运行时动态添加新的 MCP 服务器连接。
+   *
+   * @param name - 服务器名称
+   * @param mcp - MCP 配置
+   * @returns 连接状态
+   */
   export async function add(name: string, mcp: Config.Mcp) {
     const s = await state()
     const result = await create(name, mcp)
@@ -274,6 +368,17 @@ export namespace MCP {
     }
   }
 
+  /**
+   * 创建 MCP 客户端连接
+   *
+   * 根据配置类型创建不同的传输层：
+   * - remote: 尝试 StreamableHTTP，回退到 SSE
+   * - local: 使用 Stdio 传输
+   *
+   * @param key - 服务器名称
+   * @param mcp - MCP 配置
+   * @returns 客户端和状态
+   */
   async function create(key: string, mcp: Config.Mcp) {
     if (mcp.enabled === false) {
       log.info("mcp server disabled", { key })
@@ -476,6 +581,11 @@ export namespace MCP {
     }
   }
 
+  /**
+   * 获取所有 MCP 服务器的状态
+   *
+   * @returns 状态记录（服务器名 -> 状态）
+   */
   export async function status() {
     const s = await state()
     const cfg = await Config.get()
@@ -491,10 +601,22 @@ export namespace MCP {
     return result
   }
 
+  /**
+   * 获取所有已连接的客户端
+   *
+   * @returns 客户端记录（服务器名 -> 客户端）
+   */
   export async function clients() {
     return state().then((state) => state.clients)
   }
 
+  /**
+   * 连接到指定的 MCP 服务器
+   *
+   * 重新连接一个已禁用或失败的服务器。
+   *
+   * @param name - 服务器名称
+   */
   export async function connect(name: string) {
     const cfg = await Config.get()
     const config = cfg.mcp ?? {}
@@ -527,6 +649,11 @@ export namespace MCP {
     }
   }
 
+  /**
+   * 断开指定的 MCP 服务器连接
+   *
+   * @param name - 服务器名称
+   */
   export async function disconnect(name: string) {
     const s = await state()
     const client = s.clients[name]
@@ -539,6 +666,14 @@ export namespace MCP {
     s.status[name] = { status: "disabled" }
   }
 
+  /**
+   * 获取所有可用的 MCP 工具
+   *
+   * 从所有已连接的 MCP 服务器收集工具。
+   * 工具名称格式："客户端名_工具名"
+   *
+   * @returns 工具记录（工具名 -> Tool）
+   */
   export async function tools() {
     const result: Record<string, Tool> = {}
     const s = await state()
@@ -572,6 +707,13 @@ export namespace MCP {
     return result
   }
 
+  /**
+   * 获取所有可用的提示词
+   *
+   * 从所有已连接的 MCP 服务器收集提示词。
+   *
+   * @returns 提示词记录
+   */
   export async function prompts() {
     const s = await state()
     const clientsSnapshot = await clients()
@@ -593,6 +735,13 @@ export namespace MCP {
     return prompts
   }
 
+  /**
+   * 获取所有可用的资源
+   *
+   * 从所有已连接的 MCP 服务器收集资源。
+   *
+   * @returns 资源记录
+   */
   export async function resources() {
     const s = await state()
     const clientsSnapshot = await clients()
@@ -614,6 +763,14 @@ export namespace MCP {
     return result
   }
 
+  /**
+   * 获取特定提示词的内容
+   *
+   * @param clientName - 客户端名称
+   * @param name - 提示词名称
+   * @param args - 提示词参数（可选）
+   * @returns 提示词内容
+   */
   export async function getPrompt(clientName: string, name: string, args?: Record<string, string>) {
     const clientsSnapshot = await clients()
     const client = clientsSnapshot[clientName]
@@ -642,6 +799,13 @@ export namespace MCP {
     return result
   }
 
+  /**
+   * 读取特定资源的内容
+   *
+   * @param clientName - 客户端名称
+   * @param resourceUri - 资源 URI
+   * @returns 资源内容
+   */
   export async function readResource(clientName: string, resourceUri: string) {
     const clientsSnapshot = await clients()
     const client = clientsSnapshot[clientName]

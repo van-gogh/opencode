@@ -1,69 +1,110 @@
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
-import { Decimal } from "decimal.js"
-import z from "zod"
-import { type LanguageModelUsage, type ProviderMetadata } from "ai"
-import { Config } from "../config/config"
-import { Flag } from "../flag/flag"
-import { Identifier } from "../id/id"
-import { Installation } from "../installation"
+/**
+ * Session 模块 - 会话管理核心
+ *
+ * 本模块是 OpenCode 的核心模块，负责管理用户与 AI 的对话会话。
+ *
+ * 主要功能：
+ * - 会话生命周期管理（创建、更新、删除、归档）
+ * - 消息和消息部分的存储与查询
+ * - 会话分享功能
+ * - 会话分叉（fork）功能
+ * - Token 使用量和成本计算
+ * - 会话事件发布
+ *
+ * 数据结构：
+ * - Session: 会话元数据（标题、时间戳、分享信息等）
+ * - Message: 会话中的消息（用户/助手）
+ * - Part: 消息的组成部分（文本、工具调用、推理等）
+ *
+ * @module session
+ */
 
-import { Storage } from "../storage/storage"
-import { Log } from "../util/log"
-import { MessageV2 } from "./message-v2"
-import { Instance } from "../project/instance"
-import { SessionPrompt } from "./prompt"
-import { fn } from "@/util/fn"
-import { Command } from "../command"
-import { Snapshot } from "@/snapshot"
+import { BusEvent } from "@/bus/bus-event" // 事件定义工具
+import { Bus } from "@/bus" // 事件总线
+import { Decimal } from "decimal.js" // 高精度小数计算
+import z from "zod" // 参数验证
+import { type LanguageModelUsage, type ProviderMetadata } from "ai" // AI SDK 类型
+import { Config } from "../config/config" // 配置管理
+import { Flag } from "../flag/flag" // 功能标志
+import { Identifier } from "../id/id" // ID 生成工具
+import { Installation } from "../installation" // 安装信息
 
-import type { Provider } from "@/provider/provider"
-import { PermissionNext } from "@/permission/next"
+import { Storage } from "../storage/storage" // 数据存储
+import { Log } from "../util/log" // 日志工具
+import { MessageV2 } from "./message-v2" // 消息类型定义
+import { Instance } from "../project/instance" // 项目实例
+import { SessionPrompt } from "./prompt" // 会话提示词处理
+import { fn } from "@/util/fn" // 函数工具
+import { Command } from "../command" // 命令系统
+import { Snapshot } from "@/snapshot" // 快照系统
 
+import type { Provider } from "@/provider/provider" // Provider 类型
+import { PermissionNext } from "@/permission/next" // 权限系统
+
+/**
+ * Session 命名空间
+ *
+ * 包含会话管理的所有类型定义、事件和操作函数
+ */
 export namespace Session {
+  // 创建 Session 模块专用的日志记录器
   const log = Log.create({ service: "session" })
 
+  // 父会话默认标题前缀
   const parentTitlePrefix = "New session - "
+  // 子会话默认标题前缀
   const childTitlePrefix = "Child session - "
 
+  /**
+   * 创建默认会话标题
+   * @param isChild 是否为子会话
+   */
   function createDefaultTitle(isChild = false) {
     return (isChild ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString()
   }
 
+  /**
+   * 检查标题是否为默认格式
+   * @param title 会话标题
+   */
   export function isDefaultTitle(title: string) {
     return new RegExp(
       `^(${parentTitlePrefix}|${childTitlePrefix})\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$`,
     ).test(title)
   }
 
+  /**
+   * 会话信息定义
+   * 包含会话的唯一标识、项目ID、目录、父会话ID、摘要、分享信息、标题、版本、时间戳等
+   */
   export const Info = z
     .object({
-      id: Identifier.schema("session"),
-      projectID: z.string(),
-      directory: z.string(),
-      parentID: Identifier.schema("session").optional(),
+      id: Identifier.schema("session"), // 会话ID
+      projectID: z.string(), // 项目ID
+      directory: z.string(), // 工作目录
+      parentID: Identifier.schema("session").optional(), // 父会话ID（如果是子会话）
       summary: z
         .object({
-          additions: z.number(),
-          deletions: z.number(),
-          files: z.number(),
-          diffs: Snapshot.FileDiff.array().optional(),
+          additions: z.number(), // 增加行数
+          deletions: z.number(), // 删除行数
+          files: z.number(), // 涉及文件数
+          diffs: Snapshot.FileDiff.array().optional(), // 文件差异
         })
-        .optional(),
+        .optional(), // 会话摘要
       share: z
         .object({
-          url: z.string(),
+          url: z.string(), // 分享链接
         })
-        .optional(),
-      title: z.string(),
-      version: z.string(),
+        .optional(), // 分享信息
+      title: z.string(), // 会话标题
+      version: z.string(), // 版本号
       time: z.object({
-        created: z.number(),
-        updated: z.number(),
-        compacting: z.number().optional(),
-        archived: z.number().optional(),
+        created: z.number(), // 创建时间
+        updated: z.number(), // 更新时间
+        compacting: z.number().optional(), // 压缩时间
+        archived: z.number().optional(), // 归档时间
       }),
-      permission: PermissionNext.Ruleset.optional(),
+      permission: PermissionNext.Ruleset.optional(), // 权限规则集
       revert: z
         .object({
           messageID: z.string(),
@@ -71,23 +112,30 @@ export namespace Session {
           snapshot: z.string().optional(),
           diff: z.string().optional(),
         })
-        .optional(),
+        .optional(), // 回滚信息
     })
     .meta({
       ref: "Session",
     })
   export type Info = z.output<typeof Info>
 
+  /**
+   * 会话分享信息
+   */
   export const ShareInfo = z
     .object({
-      secret: z.string(),
-      url: z.string(),
+      secret: z.string(), // 分享密钥
+      url: z.string(), // 分享链接
     })
     .meta({
       ref: "SessionShare",
     })
   export type ShareInfo = z.output<typeof ShareInfo>
 
+  /**
+   * 会话事件定义
+   * 包括创建、更新、删除、差异变化、错误等事件
+   */
   export const Event = {
     Created: BusEvent.define(
       "session.created",
@@ -123,6 +171,10 @@ export namespace Session {
     ),
   }
 
+  /**
+   * 创建新会话
+   * 实际上是调用 createNext 来完成
+   */
   export const create = fn(
     z
       .object({
@@ -141,6 +193,10 @@ export namespace Session {
     },
   )
 
+  /**
+   * 分叉会话
+   * 基于现有会话和消息ID创建一个新的分支会话，并复制之前的消息历史
+   */
   export const fork = fn(
     z.object({
       sessionID: Identifier.schema("session"),
@@ -172,12 +228,19 @@ export namespace Session {
     },
   )
 
+  /**
+   * 更新会话的时间戳
+   */
   export const touch = fn(Identifier.schema("session"), async (sessionID) => {
     await update(sessionID, (draft) => {
       draft.time.updated = Date.now()
     })
   })
 
+  /**
+   * 创建下一个会话（内部实现）
+   * 处理会话的初始化、存储、事件发布和自动分享
+   */
   export async function createNext(input: {
     id?: string
     title?: string
@@ -220,15 +283,25 @@ export namespace Session {
     return result
   }
 
+  /**
+   * 获取会话信息
+   */
   export const get = fn(Identifier.schema("session"), async (id) => {
     const read = await Storage.read<Info>(["session", Instance.project.id, id])
     return read as Info
   })
 
+  /**
+   * 获取会话分享信息
+   */
   export const getShare = fn(Identifier.schema("session"), async (id) => {
     return Storage.read<ShareInfo>(["share", id])
   })
 
+  /**
+   * 分享会话
+   * 创建一个公开的分享链接
+   */
   export const share = fn(Identifier.schema("session"), async (id) => {
     const cfg = await Config.get()
     if (cfg.share === "disabled") {
@@ -244,6 +317,9 @@ export namespace Session {
     return share
   })
 
+  /**
+   * 取消分享会话
+   */
   export const unshare = fn(Identifier.schema("session"), async (id) => {
     // Use ShareNext to remove the share (same as share function uses ShareNext to create)
     const { ShareNext } = await import("@/share/share-next")
@@ -253,6 +329,11 @@ export namespace Session {
     })
   })
 
+  /**
+   * 更新会话信息
+   * @param id 会话ID
+   * @param editor 更新回调函数
+   */
   export async function update(id: string, editor: (session: Info) => void) {
     const project = Instance.project
     const result = await Storage.update<Info>(["session", project.id, id], (draft) => {
@@ -265,11 +346,18 @@ export namespace Session {
     return result
   }
 
+  /**
+   * 获取会话的文件差异
+   */
   export const diff = fn(Identifier.schema("session"), async (sessionID) => {
     const diffs = await Storage.read<Snapshot.FileDiff[]>(["session_diff", sessionID])
     return diffs ?? []
   })
 
+  /**
+   * 获取会话的消息列表
+   * @param input 包含会话ID和可选的数量限制
+   */
   export const messages = fn(
     z.object({
       sessionID: Identifier.schema("session"),
@@ -286,6 +374,9 @@ export namespace Session {
     },
   )
 
+  /**
+   * 列出所有会话
+   */
   export async function* list() {
     const project = Instance.project
     for (const item of await Storage.list(["session", project.id])) {
@@ -293,6 +384,9 @@ export namespace Session {
     }
   }
 
+  /**
+   * 获取子会话列表
+   */
   export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
     const result = [] as Session.Info[]
@@ -304,6 +398,10 @@ export namespace Session {
     return result
   })
 
+  /**
+   * 删除会话
+   * 递归删除所有子会话、消息和关联数据
+   */
   export const remove = fn(Identifier.schema("session"), async (sessionID) => {
     const project = Instance.project
     try {
@@ -327,6 +425,9 @@ export namespace Session {
     }
   })
 
+  /**
+   * 更新消息
+   */
   export const updateMessage = fn(MessageV2.Info, async (msg) => {
     await Storage.write(["message", msg.sessionID, msg.id], msg)
     Bus.publish(MessageV2.Event.Updated, {
@@ -335,6 +436,9 @@ export namespace Session {
     return msg
   })
 
+  /**
+   * 删除消息
+   */
   export const removeMessage = fn(
     z.object({
       sessionID: Identifier.schema("session"),
@@ -350,6 +454,9 @@ export namespace Session {
     },
   )
 
+  /**
+   * 删除消息部分
+   */
   export const removePart = fn(
     z.object({
       sessionID: Identifier.schema("session"),
@@ -379,6 +486,10 @@ export namespace Session {
     }),
   ])
 
+  /**
+   * 更新消息部分
+   * 支持增量更新（delta）
+   */
   export const updatePart = fn(UpdatePartInput, async (input) => {
     const part = "delta" in input ? input.part : input
     const delta = "delta" in input ? input.delta : undefined
@@ -390,6 +501,10 @@ export namespace Session {
     return part
   })
 
+  /**
+   * 计算 Token 使用量和成本
+   * 考虑了缓存命中和不同模型的价格
+   */
   export const getUsage = fn(
     z.object({
       model: z.custom<Provider.Model>(),
@@ -449,6 +564,10 @@ export namespace Session {
     }
   }
 
+  /**
+   * 初始化会话
+   * 发送初始化命令到会话
+   */
   export const initialize = fn(
     z.object({
       sessionID: Identifier.schema("session"),

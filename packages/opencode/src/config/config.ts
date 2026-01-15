@@ -1,29 +1,59 @@
-import { Log } from "../util/log"
-import path from "path"
-import { pathToFileURL } from "url"
-import os from "os"
-import z from "zod"
-import { Filesystem } from "../util/filesystem"
-import { ModelsDev } from "../provider/models"
-import { mergeDeep, pipe, unique } from "remeda"
-import { Global } from "../global"
-import fs from "fs/promises"
-import { lazy } from "../util/lazy"
-import { NamedError } from "@opencode-ai/util/error"
-import { Flag } from "../flag/flag"
-import { Auth } from "../auth"
-import { type ParseError as JsoncParseError, parse as parseJsonc, printParseErrorCode } from "jsonc-parser"
-import { Instance } from "../project/instance"
-import { LSPServer } from "../lsp/server"
-import { BunProc } from "@/bun"
-import { Installation } from "@/installation"
-import { ConfigMarkdown } from "./markdown"
-import { existsSync } from "fs"
+/**
+ * Config 模块 - 配置管理
+ *
+ * 本模块负责加载和管理 OpenCode 的所有配置。
+ *
+ * 配置来源（按优先级从低到高）：
+ * 1. 远程 well-known 配置
+ * 2. 全局用户配置
+ * 3. 自定义配置路径
+ * 4. 项目配置
+ * 5. 内联配置内容
+ *
+ * 支持的配置文件格式：
+ * - opencode.json / opencode.jsonc
+ * - agent/*.md（Agent 定义）
+ * - command/*.md（命令定义）
+ * - plugin/*.ts（插件）
+ *
+ * @module config/config
+ */
+import { Log } from "../util/log" // 日志
+import path from "path" // 路径处理
+import { pathToFileURL } from "url" // URL 转换
+import os from "os" // 操作系统
+import z from "zod" // Schema 验证
+import { Filesystem } from "../util/filesystem" // 文件系统工具
+import { ModelsDev } from "../provider/models" // 模型信息
+import { mergeDeep, pipe, unique } from "remeda" // 数据处理
+import { Global } from "../global" // 全局路径
+import fs from "fs/promises" // 文件系统
+import { lazy } from "../util/lazy" // 懒加载
+import { NamedError } from "@opencode-ai/util/error" // 命名错误
+import { Flag } from "../flag/flag" // 功能标志
+import { Auth } from "../auth" // 认证
+import { type ParseError as JsoncParseError, parse as parseJsonc, printParseErrorCode } from "jsonc-parser" // JSONC 解析
+import { Instance } from "../project/instance" // 项目实例
+import { LSPServer } from "../lsp/server" // LSP 服务器
+import { BunProc } from "@/bun" // Bun 进程
+import { Installation } from "@/installation" // 安装信息
+import { ConfigMarkdown } from "./markdown" // Markdown 配置解析
+import { existsSync } from "fs" // 文件存在检查
 
+/**
+ * Config 命名空间
+ *
+ * 提供配置管理功能
+ */
 export namespace Config {
+  // 创建配置模块日志记录器
   const log = Log.create({ service: "config" })
 
-  // Custom merge function that concatenates array fields instead of replacing them
+  /**
+   * 自定义配置合并函数
+   *
+   * 将数组字段进行连接而不是替换（plugin, instructions）
+   */
   function mergeConfigConcatArrays(target: Info, source: Info): Info {
     const merged = mergeDeep(target, source)
     if (target.plugin && source.plugin) {
@@ -35,6 +65,11 @@ export namespace Config {
     return merged
   }
 
+  /**
+   * 配置状态
+   *
+   * 加载并合并所有配置源
+   */
   export const state = Instance.state(async () => {
     const auth = await Auth.all()
 
@@ -184,6 +219,13 @@ export namespace Config {
     }
   })
 
+  /**
+   * 安装配置目录的依赖
+   *
+   * 确保插件可以正常运行
+   *
+   * @param dir - 配置目录
+   */
   export async function installDependencies(dir: string) {
     const pkg = path.join(dir, "package.json")
 
@@ -1102,7 +1144,12 @@ export namespace Config {
 
       throw new JsonError({
         path: configFilepath,
-        message: `\n--- JSONC Input ---\n${text}\n--- Errors ---\n${errorDetails}\n--- End ---`,
+        message: `
+--- JSONC Input ---
+${text}
+--- Errors ---
+${errorDetails}
+--- End ---`,
       })
     }
 
