@@ -360,6 +360,13 @@ export namespace MCP {
         status: s.status,
       }
     }
+    // Close existing client if present to prevent memory leaks
+    const existingClient = s.clients[name]
+    if (existingClient) {
+      await existingClient.close().catch((error) => {
+        log.error("Failed to close existing MCP client", { name, error })
+      })
+    }
     s.clients[name] = result.mcpClient
     s.status[name] = result.status
 
@@ -645,6 +652,13 @@ export namespace MCP {
     const s = await state()
     s.status[name] = result.status
     if (result.mcpClient) {
+      // Close existing client if present to prevent memory leaks
+      const existingClient = s.clients[name]
+      if (existingClient) {
+        await existingClient.close().catch((error) => {
+          log.error("Failed to close existing MCP client", { name, error })
+        })
+      }
       s.clients[name] = result.mcpClient
     }
   }

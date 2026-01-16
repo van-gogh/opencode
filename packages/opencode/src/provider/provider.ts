@@ -1,78 +1,49 @@
-/**
- * Provider 模块 - AI 模型提供者管理
- *
- * 本模块是 OpenCode 的核心模块之一，负责：
- * 1. 管理多个 AI 提供商（Anthropic, OpenAI, Google 等）
- * 2. 加载和配置模型信息
- * 3. 处理 API 密钥和认证
- * 4. 创建与 AI SDK 的连接
- * 5. 提供模型选择和优先级逻辑
- *
- * 支持的 Provider 来源：
- * - 内置 Provider（捆绑在代码中的 SDK）
- * - 通过配置文件自定义的 Provider
- * - 通过环境变量配置的 Provider
- * - 通过插件加载的 Provider
- *
- * @module provider
- */
+import z from "zod"
+import fuzzysort from "fuzzysort"
+import { Config } from "../config/config"
+import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
+import { NoSuchModelError, type Provider as SDK } from "ai"
+import { Log } from "../util/log"
+import { BunProc } from "../bun"
+import { Plugin } from "../plugin"
+import { ModelsDev } from "./models"
+import { NamedError } from "@opencode-ai/util/error"
+import { Auth } from "../auth"
+import { Env } from "../env"
+import { Instance } from "../project/instance"
+import { Flag } from "../flag/flag"
+import { iife } from "@/util/iife"
 
-import z from "zod" // Zod: 参数验证
-import fuzzysort from "fuzzysort" // 模糊搜索库，用于模型名称匹配
-import { Config } from "../config/config" // 配置管理
-import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda" // 函数式工具库
-import { NoSuchModelError, type Provider as SDK } from "ai" // AI SDK 核心类型
-import { Log } from "../util/log" // 日志工具
-import { BunProc } from "../bun" // Bun 进程管理，用于动态安装依赖
-import { Plugin } from "../plugin" // 插件系统
-import { ModelsDev } from "./models" // 模型数据库
-import { NamedError } from "@opencode-ai/util/error" // 命名错误类
-import { Auth } from "../auth" // 认证管理
-import { Env } from "../env" // 环境变量处理
-import { Instance } from "../project/instance" // 项目实例
-import { Flag } from "../flag/flag" // 功能标志
-import { iife } from "@/util/iife" // 立即执行函数表达式工具
+// Direct imports for bundled providers
+import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
+import { createAnthropic } from "@ai-sdk/anthropic"
+import { createAzure } from "@ai-sdk/azure"
+import { createGoogleGenerativeAI } from "@ai-sdk/google"
+import { createVertex } from "@ai-sdk/google-vertex"
+import { createVertexAnthropic } from "@ai-sdk/google-vertex/anthropic"
+import { createOpenAI } from "@ai-sdk/openai"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { createOpenRouter, type LanguageModelV2 } from "@openrouter/ai-sdk-provider"
+import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/openai-compatible/src"
+import { createXai } from "@ai-sdk/xai"
+import { createMistral } from "@ai-sdk/mistral"
+import { createGroq } from "@ai-sdk/groq"
+import { createDeepInfra } from "@ai-sdk/deepinfra"
+import { createCerebras } from "@ai-sdk/cerebras"
+import { createCohere } from "@ai-sdk/cohere"
+import { createGateway } from "@ai-sdk/gateway"
+import { createTogetherAI } from "@ai-sdk/togetherai"
+import { createPerplexity } from "@ai-sdk/perplexity"
+import { createVercel } from "@ai-sdk/vercel"
+// GitLab provider is optional; define a placeholder to keep typecheck happy when not installed
+const createGitLab: any = (..._args: any[]) => {
+  throw new Error("GitLab provider not installed. Set GITLAB_TOKEN or install '@gitlab/gitlab-ai-provider'.")
+}
+import { ProviderTransform } from "./transform"
 
-// ============ 内置 Provider SDK 导入 ============
-// 这些是预先捆绑在应用中的 Provider SDK，无需动态安装
-
-import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock" // AWS Bedrock
-import { createAnthropic } from "@ai-sdk/anthropic" // Anthropic (Claude)
-import { createAzure } from "@ai-sdk/azure" // Azure OpenAI
-import { createGoogleGenerativeAI } from "@ai-sdk/google" // Google AI (Gemini)
-import { createVertex } from "@ai-sdk/google-vertex" // Google Vertex AI
-import { createVertexAnthropic } from "@ai-sdk/google-vertex/anthropic" // Vertex AI 上的 Anthropic 模型
-import { createOpenAI } from "@ai-sdk/openai" // OpenAI
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible" // OpenAI 兼容 API
-import { createOpenRouter, type LanguageModelV2 } from "@openrouter/ai-sdk-provider" // OpenRouter
-import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/openai-compatible/src" // GitHub Copilot
-import { createXai } from "@ai-sdk/xai" // xAI (Grok)
-import { createMistral } from "@ai-sdk/mistral" // Mistral AI
-import { createGroq } from "@ai-sdk/groq" // Groq
-import { createDeepInfra } from "@ai-sdk/deepinfra" // DeepInfra
-import { createCerebras } from "@ai-sdk/cerebras" // Cerebras
-import { createCohere } from "@ai-sdk/cohere" // Cohere
-import { createGateway } from "@ai-sdk/gateway" // AI Gateway
-import { createTogetherAI } from "@ai-sdk/togetherai" // Together AI
-import { createPerplexity } from "@ai-sdk/perplexity" // Perplexity
-import { createVercel } from "@ai-sdk/vercel" // Vercel AI
-import { ProviderTransform } from "./transform" // Provider 转换工具
-
-/**
- * Provider 命名空间
- *
- * 包含所有与 AI 模型提供者相关的类型、函数和状态管理
- */
 export namespace Provider {
-  // 创建 Provider 模块专用的日志记录器
   const log = Log.create({ service: "provider" })
 
-  /**
-   * 内置 Provider SDK 映射表
-   *
-   * 将 npm 包名映射到对应的创建函数
-   * 这些 SDK 已经捆绑在应用中，无需动态安装
-   */
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
     "@ai-sdk/amazon-bedrock": createAmazonBedrock,
     "@ai-sdk/anthropic": createAnthropic,
@@ -93,35 +64,18 @@ export namespace Provider {
     "@ai-sdk/togetherai": createTogetherAI,
     "@ai-sdk/perplexity": createPerplexity,
     "@ai-sdk/vercel": createVercel,
+    "@gitlab/gitlab-ai-provider": createGitLab,
     // @ts-ignore (TODO: kill this code so we dont have to maintain it)
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
   }
 
-  /**
-   * 自定义模型加载器类型
-   * 用于处理特定 Provider 的模型加载逻辑
-   */
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
-
-  /**
-   * 自定义 Provider 加载器类型
-   * 返回 Provider 的配置选项和可选的模型加载器
-   */
   type CustomLoader = (provider: Info) => Promise<{
-    autoload: boolean // 是否自动加载（即使没有显式配置）
-    getModel?: CustomModelLoader // 自定义模型获取函数
-    options?: Record<string, any> // 额外配置选项
+    autoload: boolean
+    getModel?: CustomModelLoader
+    options?: Record<string, any>
   }>
 
-  /**
-   * 自定义 Provider 加载器映射表
-   *
-   * 为特定 Provider 提供自定义的初始化逻辑，包括：
-   * - 认证处理
-   * - 区域配置
-   * - 特殊模型加载逻辑
-   * - 自定义 header
-   */
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
     async anthropic() {
       return {
@@ -246,16 +200,23 @@ export namespace Provider {
         return undefined
       })
 
-      if (!profile && !awsAccessKeyId && !awsBearerToken) return { autoload: false }
+      const awsWebIdentityTokenFile = Env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
 
-      const { fromNodeProviderChain } = await import(await BunProc.install("@aws-sdk/credential-providers"))
-
-      // Build credential provider options (only pass profile if specified)
-      const credentialProviderOptions = profile ? { profile } : {}
+      if (!profile && !awsAccessKeyId && !awsBearerToken && !awsWebIdentityTokenFile) return { autoload: false }
 
       const providerOptions: AmazonBedrockProviderSettings = {
         region: defaultRegion,
-        credentialProvider: fromNodeProviderChain(credentialProviderOptions),
+      }
+
+      // Only use credential chain if no bearer token exists
+      // Bearer token takes precedence over credential chain (profiles, access keys, IAM roles, web identity tokens)
+      if (!awsBearerToken) {
+        const { fromNodeProviderChain } = await import(await BunProc.install("@aws-sdk/credential-providers"))
+
+        // Build credential provider options (only pass profile if specified)
+        const credentialProviderOptions = profile ? { profile } : {}
+
+        providerOptions.credentialProvider = fromNodeProviderChain(credentialProviderOptions)
       }
 
       // Add custom endpoint if specified (endpoint takes precedence over baseURL)
@@ -288,6 +249,7 @@ export namespace Provider {
                 "nova-lite",
                 "nova-pro",
                 "nova-premier",
+                "nova-2",
                 "claude",
                 "deepseek",
               ].some((m) => modelID.includes(m))
@@ -440,6 +402,41 @@ export namespace Provider {
         },
       }
     },
+    gitlab: async (input) => {
+      const instanceUrl = Env.get("GITLAB_INSTANCE_URL") || "https://gitlab.com"
+
+      const auth = await Auth.get(input.id)
+      const apiKey = await (async () => {
+        if (auth?.type === "oauth") return auth.access
+        if (auth?.type === "api") return auth.key
+        return Env.get("GITLAB_TOKEN")
+      })()
+
+      const config = await Config.get()
+      const providerConfig = config.provider?.["gitlab"]
+
+      return {
+        autoload: !!apiKey,
+        options: {
+          instanceUrl,
+          apiKey,
+          featureFlags: {
+            duo_agent_platform_agentic_chat: true,
+            duo_agent_platform: true,
+            ...(providerConfig?.options?.featureFlags || {}),
+          },
+        },
+        async getModel(sdk: ReturnType<typeof createGitLab>, modelID: string) {
+          return sdk.agenticChat(modelID, {
+            featureFlags: {
+              duo_agent_platform_agentic_chat: true,
+              duo_agent_platform: true,
+              ...(providerConfig?.options?.featureFlags || {}),
+            },
+          })
+        },
+      }
+    },
     "cloudflare-ai-gateway": async (input) => {
       const accountId = Env.get("CLOUDFLARE_ACCOUNT_ID")
       const gateway = Env.get("CLOUDFLARE_GATEWAY_ID")
@@ -469,11 +466,26 @@ export namespace Provider {
             "HTTP-Referer": "https://opencode.ai/",
             "X-Title": "opencode",
           },
-          // Custom fetch to strip Authorization header - AI Gateway uses cf-aig-authorization instead
-          // Sending Authorization header with invalid value causes auth errors
+          // Custom fetch to handle parameter transformation and auth
           fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
             const headers = new Headers(init?.headers)
+            // Strip Authorization header - AI Gateway uses cf-aig-authorization instead
             headers.delete("Authorization")
+
+            // Transform max_tokens to max_completion_tokens for newer models
+            if (init?.body && init.method === "POST") {
+              try {
+                const body = JSON.parse(init.body as string)
+                if (body.max_tokens !== undefined && !body.max_completion_tokens) {
+                  body.max_completion_tokens = body.max_tokens
+                  delete body.max_tokens
+                  init = { ...init, body: JSON.stringify(body) }
+                }
+              } catch (e) {
+                // If body parsing fails, continue with original request
+              }
+            }
+
             return fetch(input, { ...init, headers })
           },
         },
@@ -491,61 +503,51 @@ export namespace Provider {
     },
   }
 
-  /**
-   * Model 类型定义 - AI 模型信息
-   *
-   * 定义了一个 AI 模型的完整信息，包括：
-   * - 基本信息（ID、名称、家族、发布日期）
-   * - API 配置（端点、npm 包）
-   * - 能力声明（推理、附件、工具调用、多模态）
-   * - 成本信息（输入/输出/缓存 token 价格）
-   * - 限制信息（上下文窗口、输出限制）
-   */
   export const Model = z
     .object({
-      id: z.string(), // 模型唯一标识符
-      providerID: z.string(), // 所属 Provider ID
+      id: z.string(),
+      providerID: z.string(),
       api: z.object({
-        id: z.string(), // API 调用时的模型 ID
-        url: z.string(), // API 端点 URL
-        npm: z.string(), // 使用的 npm SDK 包名
+        id: z.string(),
+        url: z.string(),
+        npm: z.string(),
       }),
-      name: z.string(), // 模型显示名称
-      family: z.string().optional(), // 模型家族（如 claude, gpt 等）
+      name: z.string(),
+      family: z.string().optional(),
       capabilities: z.object({
-        temperature: z.boolean(), // 是否支持温度参数
-        reasoning: z.boolean(), // 是否支持推理模式
-        attachment: z.boolean(), // 是否支持附件
-        toolcall: z.boolean(), // 是否支持工具调用
-        input: z.object({ // 输入能力
-          text: z.boolean(), // 文本输入
-          audio: z.boolean(), // 音频输入
-          image: z.boolean(), // 图像输入
-          video: z.boolean(), // 视频输入
-          pdf: z.boolean(), // PDF 输入
+        temperature: z.boolean(),
+        reasoning: z.boolean(),
+        attachment: z.boolean(),
+        toolcall: z.boolean(),
+        input: z.object({
+          text: z.boolean(),
+          audio: z.boolean(),
+          image: z.boolean(),
+          video: z.boolean(),
+          pdf: z.boolean(),
         }),
-        output: z.object({ // 输出能力
-          text: z.boolean(), // 文本输出
-          audio: z.boolean(), // 音频输出
-          image: z.boolean(), // 图像输出
-          video: z.boolean(), // 视频输出
-          pdf: z.boolean(), // PDF 输出
+        output: z.object({
+          text: z.boolean(),
+          audio: z.boolean(),
+          image: z.boolean(),
+          video: z.boolean(),
+          pdf: z.boolean(),
         }),
-        interleaved: z.union([ // 是否支持交错思考（推理与输出交错）
+        interleaved: z.union([
           z.boolean(),
           z.object({
             field: z.enum(["reasoning_content", "reasoning_details"]),
           }),
         ]),
       }),
-      cost: z.object({ // 成本信息（单位：每百万 token 美元）
-        input: z.number(), // 输入 token 价格
-        output: z.number(), // 输出 token 价格
-        cache: z.object({ // 缓存价格
-          read: z.number(), // 缓存读取价格
-          write: z.number(), // 缓存写入价格
+      cost: z.object({
+        input: z.number(),
+        output: z.number(),
+        cache: z.object({
+          read: z.number(),
+          write: z.number(),
         }),
-        experimentalOver200K: z // 超过 200K token 时的特殊价格（某些模型）
+        experimentalOver200K: z
           .object({
             input: z.number(),
             output: z.number(),
@@ -556,40 +558,31 @@ export namespace Provider {
           })
           .optional(),
       }),
-      limit: z.object({ // 限制
-        context: z.number(), // 上下文窗口大小
-        output: z.number(), // 最大输出 token 数
+      limit: z.object({
+        context: z.number(),
+        input: z.number().optional(),
+        output: z.number(),
       }),
-      status: z.enum(["alpha", "beta", "deprecated", "active"]), // 模型状态
-      options: z.record(z.string(), z.any()), // 额外选项
-      headers: z.record(z.string(), z.string()), // 自定义 HTTP header
-      release_date: z.string(), // 发布日期
-      variants: z.record(z.string(), z.record(z.string(), z.any())).optional(), // 模型变体（如不同参数配置）
+      status: z.enum(["alpha", "beta", "deprecated", "active"]),
+      options: z.record(z.string(), z.any()),
+      headers: z.record(z.string(), z.string()),
+      release_date: z.string(),
+      variants: z.record(z.string(), z.record(z.string(), z.any())).optional(),
     })
     .meta({
       ref: "Model",
     })
   export type Model = z.infer<typeof Model>
 
-  /**
-   * Provider Info 类型定义 - Provider 信息
-   *
-   * 定义了一个 Provider 的完整信息，包括：
-   * - 基本信息（ID、名称）
-   * - 来源（环境变量、配置文件、插件等）
-   * - 认证信息（环境变量名、API 密钥）
-   * - 配置选项
-   * - 可用模型列表
-   */
   export const Info = z
     .object({
-      id: z.string(), // Provider 唯一标识符
-      name: z.string(), // Provider 显示名称
-      source: z.enum(["env", "config", "custom", "api"]), // 配置来源
-      env: z.string().array(), // 关联的环境变量名列表
-      key: z.string().optional(), // API 密钥（可选）
-      options: z.record(z.string(), z.any()), // 配置选项
-      models: z.record(z.string(), Model), // 可用模型映射表
+      id: z.string(),
+      name: z.string(),
+      source: z.enum(["env", "config", "custom", "api"]),
+      env: z.string().array(),
+      key: z.string().optional(),
+      options: z.record(z.string(), z.any()),
+      models: z.record(z.string(), Model),
     })
     .meta({
       ref: "Provider",
@@ -630,6 +623,7 @@ export namespace Provider {
       },
       limit: {
         context: model.limit.context,
+        input: model.limit.input,
         output: model.limit.output,
       },
       capabilities: {
@@ -881,7 +875,12 @@ export namespace Provider {
 
     for (const [providerID, fn] of Object.entries(CUSTOM_LOADERS)) {
       if (disabled.has(providerID)) continue
-      const result = await fn(database[providerID])
+      const data = database[providerID]
+      if (!data) {
+        log.error("Provider does not exist in model list " + providerID)
+        continue
+      }
+      const result = await fn(data)
       if (result && (result.autoload || providers[providerID])) {
         if (result.getModel) modelLoaders[providerID] = result.getModel
         mergeProvider(providerID, {
@@ -923,6 +922,7 @@ export namespace Provider {
         if (modelID === "gpt-5-chat-latest" || (providerID === "openrouter" && modelID === "openai/gpt-5-chat"))
           delete provider.models[modelID]
         if (model.status === "alpha" && !Flag.OPENCODE_ENABLE_EXPERIMENTAL_MODELS) delete provider.models[modelID]
+        if (model.status === "deprecated") delete provider.models[modelID]
         if (
           (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
           (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
@@ -956,11 +956,6 @@ export namespace Provider {
     }
   })
 
-  /**
-   * 列出所有可用的 Provider
-   *
-   * @returns Provider 信息的对象，以 providerID 为键
-   */
   export async function list() {
     return state().then((state) => state.providers)
   }
@@ -1050,41 +1045,21 @@ export namespace Provider {
     }
   }
 
-  /**
-   * 获取指定 Provider 的信息
-   *
-   * @param providerID - Provider 唯一标识符
-   * @returns Provider 信息，或 undefined 如果不存在
-   */
   export async function getProvider(providerID: string) {
     return state().then((s) => s.providers[providerID])
   }
 
-  /**
-   * 获取指定的模型信息
-   *
-   * 如果模型或 Provider 不存在，会抛出 ModelNotFoundError
-   * 并提供可能的建议（使用模糊匹配）
-   *
-   * @param providerID - Provider 唯一标识符
-   * @param modelID - 模型唯一标识符
-   * @returns 模型信息
-   * @throws ModelNotFoundError 如果模型不存在
-   */
   export async function getModel(providerID: string, modelID: string) {
     const s = await state()
     const provider = s.providers[providerID]
-    // 检查 Provider 是否存在
     if (!provider) {
       const availableProviders = Object.keys(s.providers)
-      // 使用模糊搜索提供建议
       const matches = fuzzysort.go(providerID, availableProviders, { limit: 3, threshold: -10000 })
       const suggestions = matches.map((m) => m.target)
       throw new ModelNotFoundError({ providerID, modelID, suggestions })
     }
 
     const info = provider.models[modelID]
-    // 检查模型是否存在
     if (!info) {
       const availableModels = Object.keys(provider.models)
       const matches = fuzzysort.go(modelID, availableModels, { limit: 3, threshold: -10000 })
@@ -1094,30 +1069,18 @@ export namespace Provider {
     return info
   }
 
-  /**
-   * 获取模型的语言模型实例
-   *
-   * 这是实际与 AI 服务通信时使用的模型对象
-   * 会缓存已创建的实例以避免重复初始化
-   *
-   * @param model - 模型信息
-   * @returns 语言模型实例
-   */
   export async function getLanguage(model: Model): Promise<LanguageModelV2> {
     const s = await state()
     const key = `${model.providerID}/${model.id}`
-    // 检查缓存
     if (s.models.has(key)) return s.models.get(key)!
 
     const provider = s.providers[model.providerID]
     const sdk = await getSDK(model)
 
     try {
-      // 使用自定义加载器或默认方法创建模型实例
       const language = s.modelLoaders[model.providerID]
         ? await s.modelLoaders[model.providerID](sdk, model.api.id, provider.options)
         : sdk.languageModel(model.api.id)
-      // 缓存实例
       s.models.set(key, language)
       return language
     } catch (e) {
@@ -1200,28 +1163,14 @@ export namespace Provider {
     )
   }
 
-  /**
-   * 获取默认模型
-   *
-   * 按以下优先级选择：
-   * 1. 配置文件中指定的默认模型
-   * 2. 第一个可用 Provider 的最高优先级模型
-   *
-   * @returns 默认模型的 providerID 和 modelID
-   * @throws Error 如果没有可用的 Provider 或模型
-   */
   export async function defaultModel() {
     const cfg = await Config.get()
-    // 如果配置中指定了默认模型，直接使用
     if (cfg.model) return parseModel(cfg.model)
 
-    // 否则选择第一个可用的 Provider
     const provider = await list()
       .then((val) => Object.values(val))
       .then((x) => x.find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id)))
     if (!provider) throw new Error("no providers found")
-
-    // 对模型进行排序，选择最高优先级的
     const [model] = sort(Object.values(provider.models))
     if (!model) throw new Error("no models found")
     return {
@@ -1230,42 +1179,23 @@ export namespace Provider {
     }
   }
 
-  /**
-   * 解析模型字符串
-   *
-   * 将 "providerID/modelID" 格式的字符串解析为对象
-   *
-   * @param model - 格式为 "providerID/modelID" 的字符串
-   * @returns 包含 providerID 和 modelID 的对象
-   */
   export function parseModel(model: string) {
     const [providerID, ...rest] = model.split("/")
     return {
       providerID: providerID,
-      modelID: rest.join("/"), // 支持 modelID 中包含 /
+      modelID: rest.join("/"),
     }
   }
 
-  /**
-   * 模型未找到错误
-   *
-   * 当请求的模型或 Provider 不存在时抛出
-   * 包含可能的建议以帮助用户找到正确的模型
-   */
   export const ModelNotFoundError = NamedError.create(
     "ProviderModelNotFoundError",
     z.object({
       providerID: z.string(),
       modelID: z.string(),
-      suggestions: z.array(z.string()).optional(), // 建议的模型名称
+      suggestions: z.array(z.string()).optional(),
     }),
   )
 
-  /**
-   * Provider 初始化错误
-   *
-   * 当 Provider SDK 初始化失败时抛出
-   */
   export const InitError = NamedError.create(
     "ProviderInitError",
     z.object({

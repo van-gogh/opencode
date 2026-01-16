@@ -1,112 +1,83 @@
-/**
- * Server 模块 - HTTP API 服务器
- *
- * 本模块是 OpenCode 的 HTTP API 服务器，提供 RESTful API 和 WebSocket 接口。
- *
- * 主要功能：
- * - 会话管理 API（创建、查询、删除等）
- * - 消息管理 API（发送、查询、取消等）
- * - 文件操作 API（搜索、读取、编辑等）
- * - Provider 管理 API
- * - MCP 集成 API
- * - 实时事件流（SSE）
- * - WebSocket 支持（终端、事件）
- *
- * 技术栈：
- * - Hono: 轻量级 Web 框架
- * - hono-openapi: OpenAPI 文档生成
- * - SSE: 服务器发送事件
- * - WebSocket: 双向通信
- *
- * @module server/server
- */
-
-import { BusEvent } from "@/bus/bus-event" // 事件定义
-import { Bus } from "@/bus" // 事件总线
-import { GlobalBus } from "@/bus/global" // 全局事件
-import { Log } from "../util/log" // 日志
-import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler } from "hono-openapi" // OpenAPI
-import { Hono } from "hono" // Web 框架
-import { cors } from "hono/cors" // CORS 中间件
-import { stream, streamSSE } from "hono/streaming" // 流式响应
-import { proxy } from "hono/proxy" // 代理
-import { Session } from "../session" // 会话模块
-import z from "zod" // Schema 验证
-import { Provider } from "../provider/provider" // Provider 模块
-import { filter, mapValues, sortBy, pipe } from "remeda" // 工具函数
-import { NamedError } from "@opencode-ai/util/error" // 命名错误
-import { ModelsDev } from "../provider/models" // 模型配置
-import { Ripgrep } from "../file/ripgrep" // 文件搜索
-import { Config } from "../config/config" // 配置管理
-import { File } from "../file" // 文件操作
-import { LSP } from "../lsp" // LSP 集成
-import { Format } from "../format" // 格式化
-import { MessageV2 } from "../session/message-v2" // 消息类型
-import { TuiRoute } from "./tui" // TUI 路由
-import { Instance } from "../project/instance" // 项目实例
-import { Project } from "../project/project" // 项目管理
-import { Vcs } from "../project/vcs" // 版本控制
-import { Agent } from "../agent/agent" // Agent 模块
-import { Auth } from "../auth" // 认证模块
-import { Command } from "../command" // 命令系统
-import { ProviderAuth } from "../provider/auth" // Provider 认证
-import { Global } from "../global" // 全局状态
-import { ProjectRoute } from "./project" // 项目路由
-import { ToolRegistry } from "../tool/registry" // 工具注册表
-import { zodToJsonSchema } from "zod-to-json-schema" // Zod 转 JSON Schema
-import { SessionPrompt } from "../session/prompt" // 会话提示词
-import { SessionCompaction } from "../session/compaction" // 会话压缩
-import { SessionRevert } from "../session/revert" // 会话回滚
-import { lazy } from "../util/lazy" // 延迟加载
-import { Todo } from "../session/todo" // Todo 列表
-import { InstanceBootstrap } from "../project/bootstrap" // 项目启动
-import { MCP } from "../mcp" // MCP 集成
-import { Storage } from "../storage/storage" // 存储系统
-import type { ContentfulStatusCode } from "hono/utils/http-status" // HTTP 状态码类型
-import { TuiEvent } from "@/cli/cmd/tui/event" // TUI 事件
-import { Snapshot } from "@/snapshot" // 快照系统
-import { SessionSummary } from "@/session/summary" // 会话摘要
-import { SessionStatus } from "@/session/status" // 会话状态
-import { upgradeWebSocket, websocket } from "hono/bun" // WebSocket 支持
-import { errors } from "./error" // 错误处理
-import { Pty } from "@/pty" // PTY 终端
-import { PermissionNext } from "@/permission/next" // 权限系统
-import { QuestionRoute } from "./question" // 问题路由
-import { Installation } from "@/installation" // 安装信息
-import { MDNS } from "./mdns" // mDNS 服务发现
-import { Worktree } from "../worktree" // 工作树管理
+import { BusEvent } from "@/bus/bus-event"
+import { Bus } from "@/bus"
+import { GlobalBus } from "@/bus/global"
+import { Log } from "../util/log"
+import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler } from "hono-openapi"
+import { Hono } from "hono"
+import { cors } from "hono/cors"
+import { stream, streamSSE } from "hono/streaming"
+import { proxy } from "hono/proxy"
+import { basicAuth } from "hono/basic-auth"
+import { Session } from "../session"
+import z from "zod"
+import { Provider } from "../provider/provider"
+import { filter, mapValues, sortBy, pipe } from "remeda"
+import { NamedError } from "@opencode-ai/util/error"
+import { ModelsDev } from "../provider/models"
+import { Ripgrep } from "../file/ripgrep"
+import { Config } from "../config/config"
+import { File } from "../file"
+import { LSP } from "../lsp"
+import { Format } from "../format"
+import { MessageV2 } from "../session/message-v2"
+import { TuiRoute } from "./tui"
+import { Instance } from "../project/instance"
+import { Project } from "../project/project"
+import { Vcs } from "../project/vcs"
+import { Agent } from "../agent/agent"
+import { Auth } from "../auth"
+import { Flag } from "../flag/flag"
+import { Command } from "../command"
+import { ProviderAuth } from "../provider/auth"
+import { Global } from "../global"
+import { ProjectRoute } from "./project"
+import { ToolRegistry } from "../tool/registry"
+import { zodToJsonSchema } from "zod-to-json-schema"
+import { SessionPrompt } from "../session/prompt"
+import { SessionCompaction } from "../session/compaction"
+import { SessionRevert } from "../session/revert"
+import { lazy } from "../util/lazy"
+import { Todo } from "../session/todo"
+import { InstanceBootstrap } from "../project/bootstrap"
+import { MCP } from "../mcp"
+import { Storage } from "../storage/storage"
+import type { ContentfulStatusCode } from "hono/utils/http-status"
+import { TuiEvent } from "@/cli/cmd/tui/event"
+import { Snapshot } from "@/snapshot"
+import { SessionSummary } from "@/session/summary"
+import { SessionStatus } from "@/session/status"
+import { upgradeWebSocket, websocket } from "hono/bun"
+import { HTTPException } from "hono/http-exception"
+import { errors } from "./error"
+import { Pty } from "@/pty"
+import { PermissionNext } from "@/permission/next"
+import { QuestionRoute } from "./question"
+import { Installation } from "@/installation"
+import { MDNS } from "./mdns"
+import { Worktree } from "../worktree"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
-// 禁用 AI SDK 的警告日志输出
 globalThis.AI_SDK_LOG_WARNINGS = false
 
-/**
- * Server 命名空间
- *
- * 提供 HTTP API 服务器的所有功能
- */
 export namespace Server {
-  // 创建服务器专用日志记录器
   const log = Log.create({ service: "server" })
 
-  // 服务器 URL 和 CORS 白名单
   let _url: URL | undefined
   let _corsWhitelist: string[] = []
 
-  /** 获取服务器 URL */
   export function url(): URL {
     return _url ?? new URL("http://localhost:4096")
   }
 
-  /** 服务器事件 */
   export const Event = {
-    Connected: BusEvent.define("server.connected", z.object({})), // 客户端连接
-    Disposed: BusEvent.define("global.disposed", z.object({})), // 全局销毁
+    Connected: BusEvent.define("server.connected", z.object({})),
+    Disposed: BusEvent.define("global.disposed", z.object({})),
   }
 
   const app = new Hono()
   export const App: () => Hono = lazy(
     () =>
+      // TODO: Break server.ts into smaller route files to fix type inference
       app
         .onError((err, c) => {
           log.error("failed", {
@@ -120,10 +91,17 @@ export namespace Server {
             else status = 500
             return c.json(err.toObject(), { status })
           }
+          if (err instanceof HTTPException) return err.getResponse()
           const message = err instanceof Error && err.stack ? err.stack : err.toString()
           return c.json(new NamedError.Unknown({ message }).toObject(), {
             status: 500,
           })
+        })
+        .use((c, next) => {
+          const password = Flag.OPENCODE_SERVER_PASSWORD
+          if (!password) return next()
+          const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
+          return basicAuth({ username, password })(c, next)
         })
         .use(async (c, next) => {
           const skipLogging = c.req.path === "/log"
@@ -746,6 +724,8 @@ export namespace Server {
           validator(
             "query",
             z.object({
+              directory: z.string().optional().meta({ description: "Filter sessions by project directory" }),
+              roots: z.coerce.boolean().optional().meta({ description: "Only return root sessions (no parentID)" }),
               start: z.coerce
                 .number()
                 .optional()
@@ -759,6 +739,8 @@ export namespace Server {
             const term = query.search?.toLowerCase()
             const sessions: Session.Info[] = []
             for await (const session of Session.list()) {
+              if (query.directory !== undefined && session.directory !== query.directory) continue
+              if (query.roots && session.parentID) continue
               if (query.start !== undefined && session.time.updated < query.start) continue
               if (term !== undefined && !session.title.toLowerCase().includes(term)) continue
               sessions.push(session)
@@ -2859,6 +2841,10 @@ export namespace Server {
               host: "app.opencode.ai",
             },
           })
+          response.headers.set(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'",
+          )
           return response
         }) as unknown as Hono,
   )

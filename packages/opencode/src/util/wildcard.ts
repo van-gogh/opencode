@@ -35,16 +35,18 @@ export namespace Wildcard {
    * match("hello", "h?llo") // true
    */
   export function match(str: string, pattern: string) {
-    const regex = new RegExp(
-      "^" +
-        pattern
-          .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape special regex chars
-          .replace(/\*/g, ".*") // * becomes .*
-          .replace(/\?/g, ".") + // ? becomes .
-        "$",
-      "s", // s flag enables multiline matching
-    )
-    return regex.test(str)
+    let escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape special regex chars
+      .replace(/\*/g, ".*") // * becomes .*
+      .replace(/\?/g, ".") // ? becomes .
+
+    // If pattern ends with " *" (space + wildcard), make the trailing part optional
+    // This allows "ls *" to match both "ls" and "ls -la"
+    if (escaped.endsWith(" .*")) {
+      escaped = escaped.slice(0, -3) + "( .*)?"
+    }
+
+    return new RegExp("^" + escaped + "$", "s").test(str)
   }
 
   /**
